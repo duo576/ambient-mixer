@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>氛围音播放器</title>
+<style>
+  html{
+    font-family: system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  body{
+    margin:0;
+    background:transparent;
+    color: var(--foreground, #1c1e22);
+    font-size:14px;
+    line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+  }
+  .app{ padding:14px 16px 20px; }
+
+  /* ---------- header ---------- */
+  header{
+    display:flex; align-items:center; justify-content:space-between;
+    gap:12px; flex-wrap:wrap; margin-bottom:12px;
+  }
+  .brand{ display:flex; align-items:baseline; gap:10px; min-width:0; }
+  h1{ font-size:15px; font-weight:650; margin:0; letter-spacing:.01em; white-space:nowrap; }
+  .count{
+    font-size:12px; color: var(--muted-foreground, #6c7076);
+    font-variant-numeric:tabular-nums; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis;
+  }
+  .actions{ display:flex; gap:8px; }
+
+  .btn{
+    font:inherit; font-size:13px; padding:7px 14px; border-radius:8px;
+    border:1px solid var(--border, #e2e4e8);
+    background: var(--card, #fff); color: var(--foreground, #1c1e22);
+    cursor:pointer; white-space:nowrap;
+    transition: border-color .15s ease, background-color .15s ease;
+  }
+  .btn:hover{ border-color: color-mix(in srgb, var(--accent, #0f9d76) 45%, var(--border, #e2e4e8)); }
+  .btn.primary{
+    background: color-mix(in srgb, var(--accent, #0f9d76) 13%, var(--card, #fff));
+    border-color: color-mix(in srgb, var(--accent, #0f9d76) 42%, var(--border, #e2e4e8));
+    color: color-mix(in srgb, var(--accent, #0f9d76) 78%, var(--foreground, #1c1e22));
+    font-weight:600;
+  }
+  .btn svg{ vertical-align:-2px; margin-right:5px; }
+
+  /* ---------- empty state ---------- */
+  .empty{
+    border:1.5px dashed var(--border, #d6d9de);
+    border-radius:12px; padding:46px 20px; text-align:center;
+    color: var(--muted-foreground, #6c7076); cursor:pointer;
+    transition: border-color .15s ease;
+  }
+  .empty strong{ display:block; color: var(--foreground, #1c1e22); font-weight:600; font-size:14px; margin-bottom:5px; }
+  .empty:hover{ border-color: var(--accent, #0f9d76); }
+
+  /* ---------- list ---------- */
+  #list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+  .row{
+    display:grid;
+    grid-template-columns: 36px minmax(100px,1.4fr) minmax(100px,1.6fr) 90px 126px 30px 30px;
+    align-items:center; gap:10px;
+    background: var(--card, #fff);
+    border:1px solid var(--border, #e2e4e8);
+    border-radius:10px; padding:8px 10px;
+    transition: border-color .15s ease, background-color .15s ease;
+  }
+  .row:hover{ border-color: color-mix(in srgb, var(--accent, #0f9d76) 35%, var(--border, #e2e4e8)); }
+  .row.playing{
+    background: color-mix(in srgb, var(--accent, #0f9d76) 9%, var(--card, #fff));
+    border-color: color-mix(in srgb, var(--accent, #0f9d76) 40%, var(--border, #e2e4e8));
+  }
+  .row.dragging{ opacity:.45; }
+  .row.err .txt{ color:#d4483b; }
+
+  .play{
+    width:34px; height:34px; border-radius:50%;
+    border:1px solid var(--border, #e2e4e8);
+    background:transparent; color: var(--foreground, #1c1e22);
+    display:grid; place-items:center; cursor:pointer; padding:0;
+    transition: background-color .15s ease, border-color .15s ease;
+  }
+  .play:hover{ border-color: var(--accent, #0f9d76); }
+  .row.playing .play{
+    background: var(--accent, #0f9d76);
+    border-color:transparent;
+    color: var(--card, #fff);
+  }
+
+  .name{
+    display:flex; align-items:center; gap:9px; min-width:0; cursor:grab;
+  }
+  .name:active{ cursor:grabbing; }
+  .grip{
+    flex:none; display:grid; grid-template-columns:repeat(2,3px); gap:3px;
+    color: var(--muted-foreground, #9aa0a6); padding:3px 1px;
+  }
+  .grip i{ width:3px; height:3px; border-radius:50%; background:currentColor; display:block; }
+  .txt{
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    font-weight:500; font-size:13.5px;
+  }
+
+  .time{
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size:12px; color: var(--muted-foreground, #6c7076);
+    font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap;
+  }
+  .time .sep{ opacity:.45; }
+
+  .vol{ display:flex; align-items:center; gap:8px; }
+  .vv{
+    font-size:11px; color: var(--muted-foreground, #6c7076);
+    font-variant-numeric:tabular-nums; min-width:34px; text-align:right;
+  }
+
+  /* ---------- range sliders ---------- */
+  input[type=range]{
+    -webkit-appearance:none; appearance:none;
+    background:transparent; margin:0; height:22px;
+    cursor:pointer; width:100%; padding:0;
+  }
+  input[type=range]::-webkit-slider-runnable-track{
+    height:5px; border-radius:99px;
+    background: linear-gradient(to right,
+      var(--accent, #0f9d76) var(--p, 0%),
+      var(--border, #e2e4e8) var(--p, 0%));
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; appearance:none;
+    width:13px; height:13px; border-radius:50%;
+    background: var(--card, #fff);
+    border:2px solid var(--accent, #0f9d76);
+    margin-top:-4px;
+    box-shadow:0 1px 2px rgba(0,0,0,.18);
+  }
+  input[type=range]::-moz-range-track{
+    height:5px; border-radius:99px; background: var(--border, #e2e4e8);
+  }
+  input[type=range]::-moz-range-progress{
+    height:5px; border-radius:99px; background: var(--accent, #0f9d76);
+  }
+  input[type=range]::-moz-range-thumb{
+    width:11px; height:11px; border-radius:50%;
+    background: var(--card, #fff);
+    border:2px solid var(--accent, #0f9d76);
+    box-shadow:0 1px 2px rgba(0,0,0,.18);
+  }
+  .vol input[type=range]{ flex:1; width:auto; min-width:48px; }
+  input[type=range]:focus-visible{ outline:none; }
+  input[type=range]:focus-visible::-webkit-slider-thumb{ box-shadow:0 0 0 3px color-mix(in srgb, var(--accent, #0f9d76) 45%, transparent); }
+
+  /* ---------- icon buttons ---------- */
+  .iconbtn{
+    width:28px; height:28px; border:none; background:transparent;
+    border-radius:6px; cursor:pointer; padding:0;
+    color: var(--muted-foreground, #8a8f96);
+    display:grid; place-items:center;
+    transition: background-color .15s ease, color .15s ease;
+  }
+  .iconbtn:hover{ background: color-mix(in srgb, var(--foreground, #1c1e22) 8%, transparent); color: var(--foreground, #1c1e22); }
+  .loop.on{ color: color-mix(in srgb, var(--accent, #0f9d76) 82%, var(--foreground, #1c1e22)); }
+  .rm:hover{ color:#d4483b; }
+
+  /* ---------- misc ---------- */
+  .hint{
+    margin:10px 2px 0; font-size:12px;
+    color: color-mix(in srgb, var(--muted-foreground, #6c7076) 70%, var(--foreground, #1c1e22));
+  }
+  .hidden{ display:none !important; }
+
+  #overlay{
+    position:fixed; inset:0; z-index:20; display:none;
+    place-items:center; text-align:center; padding:20px;
+    background: color-mix(in srgb, var(--accent, #0f9d76) 10%, transparent);
+    border:2px dashed var(--accent, #0f9d76);
+    font-weight:600; font-size:15px;
+    color: var(--foreground, #1c1e22);
+    pointer-events:none;
+  }
+  body.dropping #overlay{ display:grid; }
+
+  button:focus-visible, .empty:focus-visible, .name:focus-visible{
+    outline:2px solid color-mix(in srgb, var(--accent, #0f9d76) 55%, transparent);
+    outline-offset:2px;
+  }
+
+  /* ---------- narrow / widget ---------- */
+  @media (max-width: 680px){
+    .row{
+      grid-template-columns: 36px minmax(0,1fr) auto 30px;
+      grid-template-areas:
+        "play name time rm"
+        "seek seek seek seek"
+        "vol vol vol loop";
+      row-gap:6px;
+    }
+    .play{ grid-area:play; }
+    .name{ grid-area:name; }
+    .seek{ grid-area:seek; }
+    .time{ grid-area:time; }
+    .vol{ grid-area:vol; }
+    .loop{ grid-area:loop; justify-self:end; }
+    .rm{ grid-area:rm; }
+    .app{ padding:12px 12px 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">
+      <h1>氛围音播放器</h1>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="actions">
+      <button class="btn hidden" id="allBtn" type="button">全部播放</button>
+      <button class="btn primary" id="addBtn" type="button">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>添加音频
+      </button>
+    </div>
+  </header>
+
+  <div class="empty" id="empty" role="button" tabindex="0">
+    <strong>把氛围音文件加进来</strong>
+    点击选择文件，或直接拖进窗口
+  </div>
+
+  <ul id="list"></ul>
+  <p class="hint hidden" id="hint">拖动文件名可调整顺序 · 各音轨互不干扰，可同时播放</p>
+</div>
+
+<div id="overlay">松开即可添加音频</div>
+<input type="file" id="fileInput" multiple accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.opus,.aiff,.aif" hidden>
+
+<script>
+(function(){
+  'use strict';
+
+  const $ = (s, r) => (r || document).querySelector(s);
+  const listEl = $('#list'), emptyEl = $('#empty'), fileInput = $('#fileInput'),
+        addBtn = $('#addBtn'), allBtn = $('#allBtn'), countEl = $('#count'),
+        hintEl = $('#hint');
+
+  const AUDIO_RE = /\.(mp3|wav|ogg|oga|m4a|aac|flac|opus|webm|aiff?|mp4)$/i;
+  const LS_KEY = 'ambient-mixer-meta';
+  const DB_NAME = 'ambient-mixer', STORE = 'files';
+
+  let tracks = [];
+  let db = null;
+  let saveTimer = 0;
+  let draggingId = null;
+  let dropDepth = 0;
+  let raf = 0;
+
+  /* ============ icons ============ */
+  const ICON_PLAY  = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="none"><path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86A1 1 0 0 0 8 5.14z"/></svg>';
+  const ICON_PAUSE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="none"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
+  const ICON_LOOP  = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>';
+  const ICON_X     = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+
+  /* ============ utils ============ */
+  function uid(){
+    return (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+      : 't' + Date.now() + Math.random().toString(36).slice(2);
+  }
+  function esc(s){
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function fmt(sec){
+    if (!isFinite(sec) || sec < 0) return '--:--';
+    sec = Math.floor(sec);
+    const m = Math.floor(sec / 60), r = sec % 60;
+    return m + ':' + String(r).padStart(2, '0');
+  }
+  function scheduleSave(){
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveMeta, 200);
+  }
+  function saveMeta(){
+    try{
+      localStorage.setItem(LS_KEY, JSON.stringify(
+        tracks.map(t => ({ id: t.id, volume: t.volume, loop: t.loop }))
+      ));
+    }catch(e){ /* storage unavailable: session-only */ }
+  }
+
+  /* ============ IndexedDB (file blobs) ============ */
+  function openDB(){
+    return new Promise((res, rej) => {
+      if (!('indexedDB' in window)) return rej();
+      let req;
+      try{ req = indexedDB.open(DB_NAME, 1); }catch(e){ return rej(e); }
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE, { keyPath: 'id' });
+      };
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => rej(req.error);
+      req.onblocked = () => rej();
+    });
+  }
+  function idbRun(mode, fn){
+    return new Promise((res, rej) => {
+      if (!db) return rej();
+      let r;
+      try{ r = fn(db.transaction(STORE, mode).objectStore(STORE)); }
+      catch(e){ return rej(e); }
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+  const idbPut = rec => idbRun('readwrite', os => os.put(rec));
+  const idbDel = id  => idbRun('readwrite', os => os.delete(id));
+  const idbAll = ()  => idbRun('readonly',   os => os.getAll());
+
+  /* ============ track model ============ */
+
+  /**
+   * 嗅探真实容器类型。.mp3 扩展名的流式 MP4（fMP4）会让浏览器按 audio/mpeg
+   * 解析，估出错误时长并提前截断播放，必须纠正为真实类型。
+   */
+  async function sniffType(blob){
+    try{
+      const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+      if (head.length >= 8 &&
+          head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70) return 'audio/mp4';
+      if (head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33) return 'audio/mpeg';
+      if (head[0] === 0xFF && (head[1] & 0xE0) === 0xE0) return 'audio/mpeg';
+      if (head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46) return 'audio/wav';
+      if (head[0] === 0x66 && head[1] === 0x4C && head[2] === 0x61 && head[3] === 0x43) return 'audio/flac';
+      if (head[0] === 0x4F && head[1] === 0x67 && head[2] === 0x67 && head[3] === 0x53) return 'audio/ogg';
+    }catch(e){}
+    return null;
+  }
+  async function sourceBlob(rec){
+    try{
+      const sniffed = await sniffType(rec.blob);
+      const declared = rec.blob.type || '';
+      if (sniffed && sniffed !== declared){
+        return new File([rec.blob], rec.name || 'audio', { type: sniffed });
+      }
+    }catch(e){}
+    return rec.blob;
+  }
+
+  async function makeTrack(rec){
+    const audio = new Audio();
+    audio.preload = 'metadata';
+    audio.loop = rec.loop !== false;
+    audio.volume = (typeof rec.volume === 'number' && rec.volume >= 0 && rec.volume <= 1) ? rec.volume : 0.8;
+    audio.src = URL.createObjectURL(await sourceBlob(rec));
+
+    const t = {
+      id: rec.id, name: rec.name, blob: rec.blob,
+      audio, volume: audio.volume, loop: audio.loop,
+      el: null, seeking: false
+    };
+
+    audio.addEventListener('loadedmetadata', () => {
+      if (t.el){ t.el.dur.textContent = fmt(audio.duration); updateProgress(t); }
+    });
+    audio.addEventListener('timeupdate', () => updateProgress(t));
+    audio.addEventListener('play',   () => { rowState(t); updateStatus(); ensureTick(); });
+    audio.addEventListener('pause',  () => { rowState(t); updateStatus(); updateProgress(t); });
+    audio.addEventListener('ended',  () => {
+      try{ audio.currentTime = 0; }catch(e){}
+      rowState(t); updateStatus(); updateProgress(t);
+    });
+    audio.addEventListener('error',  () => { if (t.el){ t.el.row.classList.add('err'); t.el.txt.title = '无法解码此文件'; } });
+
+    return t;
+  }
+
+  function createRow(t){
+    const li = document.createElement('li');
+    li.className = 'row';
+    li.dataset.id = t.id;
+    li.innerHTML =
+      '<button class="play" type="button" aria-label="播放">' + ICON_PLAY + '</button>' +
+      '<div class="name" draggable="true" tabindex="0" title="' + esc(t.name) + '">' +
+        '<span class="grip" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>' +
+        '<span class="txt">' + esc(t.name) + '</span>' +
+      '</div>' +
+      '<input class="seek" type="range" min="0" max="100" step="0.1" value="0" aria-label="播放进度">' +
+      '<div class="time"><span class="cur">0:00</span><span class="sep"> / </span><span class="dur">--:--</span></div>' +
+      '<div class="vol">' +
+        '<input class="vs" type="range" min="0" max="1" step="0.01" value="' + t.volume + '" aria-label="音量">' +
+        '<span class="vv">' + Math.round(t.volume * 100) + '%</span>' +
+      '</div>' +
+      '<button class="iconbtn loop' + (t.loop ? ' on' : '') + '" type="button" aria-pressed="' + t.loop + '" title="循环播放" aria-label="循环播放">' + ICON_LOOP + '</button>' +
+      '<button class="iconbtn rm" type="button" title="移除" aria-label="移除">' + ICON_X + '</button>';
+
+    const a = t.audio;
+    const el = {
+      row: li,
+      play: $('.play', li),
+      name: $('.name', li),
+      txt: $('.txt', li),
+      seek: $('.seek', li),
+      cur: $('.cur', li),
+      dur: $('.dur', li),
+      vs: $('.vs', li),
+      vv: $('.vv', li),
+      loop: $('.loop', li),
+      rm: $('.rm', li)
+    };
+    t.el = el;
+    el.vs.style.setProperty('--p', (t.volume * 100) + '%');
+
+    /* play / pause */
+    el.play.addEventListener('click', () => togglePlay(t));
+
+    /* seek */
+    el.seek.addEventListener('pointerdown', () => { t.seeking = true; });
+    el.seek.addEventListener('input', () => {
+      const v = parseFloat(el.seek.value);
+      if (isFinite(a.duration) && a.duration > 0){
+        try{ a.currentTime = v / 100 * a.duration; }catch(e){}
+      }
+      el.seek.style.setProperty('--p', v + '%');
+      el.cur.textContent = fmt(a.currentTime);
+    });
+
+    /* volume */
+    el.vs.addEventListener('input', () => {
+      const v = parseFloat(el.vs.value);
+      a.volume = v;
+      t.volume = v;
+      el.vs.style.setProperty('--p', (v * 100) + '%');
+      el.vv.textContent = Math.round(v * 100) + '%';
+      el.vs.title = '音量 ' + Math.round(v * 100) + '%';
+      scheduleSave();
+    });
+    el.vs.title = '音量 ' + Math.round(t.volume * 100) + '%';
+
+    /* loop */
+    el.loop.addEventListener('click', () => {
+      t.loop = !t.loop;
+      a.loop = t.loop;
+      el.loop.classList.toggle('on', t.loop);
+      el.loop.setAttribute('aria-pressed', String(t.loop));
+      scheduleSave();
+    });
+
+    /* remove */
+    el.rm.addEventListener('click', () => removeTrack(t));
+
+    /* drag reorder (handle = name cell) */
+    el.name.addEventListener('dragstart', e => {
+      draggingId = t.id;
+      li.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      try{ e.dataTransfer.setData('text/plain', t.id); }catch(err){}
+    });
+    el.name.addEventListener('dragend', () => {
+      draggingId = null;
+      li.classList.remove('dragging');
+      commitOrder();
+    });
+
+    return li;
+  }
+
+  function rowState(t){
+    if (!t.el) return;
+    const on = !t.audio.paused && !t.audio.ended;
+    t.el.row.classList.toggle('playing', on);
+    t.el.play.innerHTML = on ? ICON_PAUSE : ICON_PLAY;
+    t.el.play.setAttribute('aria-label', on ? '暂停' : '播放');
+  }
+
+  function updateStatus(){
+    const n = tracks.length;
+    const p = tracks.filter(t => !t.audio.paused && !t.audio.ended).length;
+    countEl.textContent = n ? (p ? n + ' 条音轨 · ' + p + ' 条播放中' : n + ' 条音轨') : '';
+    allBtn.classList.toggle('hidden', n === 0);
+    allBtn.textContent = p > 0 ? '全部暂停' : '全部播放';
+    allBtn.setAttribute('aria-label', allBtn.textContent);
+    hintEl.classList.toggle('hidden', n < 2);
+    emptyEl.classList.toggle('hidden', n > 0);
+  }
+
+  function updateProgress(t){
+    if (!t.el) return;
+    const a = t.audio, d = a.duration;
+    const pct = (isFinite(d) && d > 0) ? (a.currentTime / d) * 100 : 0;
+    if (!t.seeking){
+      t.el.seek.value = pct;
+      t.el.seek.style.setProperty('--p', pct.toFixed(2) + '%');
+    }
+    t.el.cur.textContent = fmt(a.currentTime);
+    if (isFinite(d)) t.el.dur.textContent = fmt(d);
+  }
+
+  function ensureTick(){
+    if (!raf) raf = requestAnimationFrame(tick);
+  }
+  function tick(){
+    let any = false;
+    for (const t of tracks){
+      if (!t.audio.paused && !t.audio.ended){ any = true; updateProgress(t); }
+    }
+    raf = any ? requestAnimationFrame(tick) : 0;
+  }
+
+  /* flush any in-progress seek on pointer release (any track) */
+  function flushSeeking(){
+    let any = false;
+    for (const t of tracks){
+      if (t.seeking){ t.seeking = false; updateProgress(t); any = true; }
+    }
+    if (any) ensureTick();
+  }
+  window.addEventListener('pointerup', flushSeeking);
+  window.addEventListener('pointercancel', flushSeeking);
+
+  /* ============ actions ============ */
+  async function togglePlay(t){
+    if (t.audio.paused){
+      try{ await t.audio.play(); }catch(e){ console.warn('play() failed:', e); }
+    }else{
+      t.audio.pause();
+    }
+  }
+
+  async function removeTrack(t){
+    t.audio.pause();
+    try{ URL.revokeObjectURL(t.audio.src); }catch(e){}
+    if (t.el) t.el.row.remove();
+    tracks = tracks.filter(x => x !== t);
+    try{ await idbDel(t.id); }catch(e){}
+    saveMeta();
+    updateStatus();
+  }
+
+  function appendRow(t){
+    listEl.appendChild(createRow(t));
+    updateProgress(t);
+    rowState(t);
+  }
+
+  function isAudioFile(f){
+    return !!f && ((f.type && f.type.indexOf('audio/') === 0) || AUDIO_RE.test(f.name));
+  }
+
+  async function addFiles(fileList){
+    const arr = Array.from(fileList || []);
+    let added = 0;
+    for (const f of arr){
+      if (!isAudioFile(f)) continue;
+      if (tracks.some(t => t.name === f.name && t.blob.size === f.size)) continue;
+      const t = await makeTrack({ id: uid(), name: f.name, blob: f });
+      tracks.push(t);
+      appendRow(t);
+      try{ await idbPut({ id: t.id, name: t.name, blob: f }); }catch(e){}
+      added++;
+    }
+    if (added) saveMeta();
+    updateStatus();
+    return added;
+  }
+
+  function commitOrder(){
+    const ids = Array.from(listEl.querySelectorAll('.row')).map(r => r.dataset.id);
+    const map = new Map(tracks.map(t => [t.id, t]));
+    const next = ids.map(id => map.get(id)).filter(Boolean);
+    if (next.length === tracks.length){
+      tracks = next;
+      saveMeta();
+    }
+  }
+
+  /* ============ reorder DnD ============ */
+  function rowAfter(y){
+    const rows = Array.from(listEl.querySelectorAll('.row:not(.dragging)'));
+    for (const r of rows){
+      const b = r.getBoundingClientRect();
+      if (y < b.top + b.height / 2) return r;
+    }
+    return null;
+  }
+  listEl.addEventListener('dragover', e => {
+    if (!draggingId) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const dragRow = listEl.querySelector('.row.dragging');
+    if (!dragRow) return;
+    const after = rowAfter(e.clientY);
+    if (!after){
+      if (listEl.lastElementChild !== dragRow) listEl.appendChild(dragRow);
+    }else if (after !== dragRow){
+      listEl.insertBefore(dragRow, after);
+    }
+  });
+  listEl.addEventListener('drop', e => { if (draggingId) e.preventDefault(); });
+
+  /* ============ file drop from Finder ============ */
+  function hasFiles(e){
+    const dt = e.dataTransfer;
+    if (!dt || !dt.types) return false;
+    for (let i = 0; i < dt.types.length; i++) if (dt.types[i] === 'Files') return true;
+    return false;
+  }
+  window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+  window.addEventListener('dragenter', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dropDepth++;
+    document.body.classList.add('dropping');
+  });
+  window.addEventListener('dragleave', () => {
+    dropDepth = Math.max(0, dropDepth - 1);
+    if (!dropDepth) document.body.classList.remove('dropping');
+  });
+  window.addEventListener('drop', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dropDepth = 0;
+    document.body.classList.remove('dropping');
+    addFiles(e.dataTransfer.files);
+  });
+
+  /* ============ chrome wiring ============ */
+  addBtn.addEventListener('click', () => fileInput.click());
+  emptyEl.addEventListener('click', () => fileInput.click());
+  emptyEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); fileInput.click(); }
+  });
+  fileInput.addEventListener('change', () => {
+    addFiles(fileInput.files);
+    fileInput.value = '';
+  });
+  allBtn.addEventListener('click', () => {
+    const anyPlaying = tracks.some(t => !t.audio.paused && !t.audio.ended);
+    if (anyPlaying){
+      tracks.forEach(t => t.audio.pause());
+    }else{
+      tracks.forEach(t => { const p = t.audio.play(); if (p && p.catch) p.catch(() => {}); });
+    }
+  });
+
+  /* ============ restore ============ */
+  async function restore(){
+    let meta = [];
+    try{ meta = JSON.parse(localStorage.getItem(LS_KEY) || '[]'); }catch(e){}
+    let files = [];
+    try{ files = await idbAll(); }catch(e){}
+    if (!files.length && !meta.length){ updateStatus(); return; }
+
+    const byId = new Map(files.map(f => [f.id, f]));
+    const used = new Set();
+    const restored = [];
+    for (const m of meta){
+      const f = byId.get(m.id);
+      if (!f) continue;
+      used.add(m.id);
+      restored.push(await makeTrack({ id: f.id, name: f.name, blob: f.blob, volume: m.volume, loop: m.loop }));
+    }
+    for (const f of files){
+      if (!used.has(f.id)) restored.push(await makeTrack({ id: f.id, name: f.name, blob: f.blob }));
+    }
+    tracks = restored;
+    tracks.forEach(appendRow);
+    updateStatus();
+  }
+
+  openDB()
+    .catch(() => null)
+    .then(d => { db = d; return restore(); })
+    .catch(err => { console.warn('restore failed:', err); updateStatus(); });
+
+  /* test / automation hook */
+  window.ambientMixer = {
+    get tracks(){ return tracks; },
+    addFiles,
+    commitOrder
+  };
+
+  updateStatus();
+})();
+</script>
+</body>
+</html>
