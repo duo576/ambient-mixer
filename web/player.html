@@ -575,6 +575,50 @@
     }
   }
 
+  /* ============ 播放设备切换检测 ============ */
+  // 规则：检测到默认输出设备变化 → 暂停所有音轨（保留播放位置）
+  function pauseAllTracks(){
+    tracks.forEach(t => { try{ t.audio.pause(); }catch(e){} });
+  }
+
+  function watchOutputDevice(){
+    const md = navigator.mediaDevices;
+    if (!md || !md.enumerateDevices) return; // App 内由原生 CoreAudio 监听兜底
+    let last = null;
+    let busy = false;
+
+    async function fingerprint(){
+      try{
+        const devs = await md.enumerateDevices();
+        return devs.filter(d => d.kind === 'audiooutput')
+          .map(d => d.deviceId + '|' + d.label).join(';');
+      }catch(e){ return null; }
+    }
+
+    async function check(){
+      if (busy) return;
+      busy = true;
+      const fp = await fingerprint();
+      busy = false;
+      if (fp === null) return;
+      if (last === null){ last = fp; return; }
+      if (fp !== last){
+        last = fp;
+        if (tracks.some(t => !t.audio.paused)) pauseAllTracks();
+      }
+    }
+
+    if (typeof md.addEventListener === 'function'){
+      md.addEventListener('devicechange', () => { check(); });
+    }
+    // 兜底轮询：播放期间每 2 秒比对一次设备指纹（部分引擎 devicechange 不触发默认设备切换）
+    setInterval(() => {
+      if (tracks.some(t => !t.audio.paused)) check();
+    }, 2000);
+
+    check();
+  }
+
   /* ============ reorder DnD ============ */
   function rowAfter(y){
     const rows = Array.from(listEl.querySelectorAll('.row:not(.dragging)'));
@@ -664,6 +708,16 @@
     for (const f of files){
       if (!used.has(f.id)) restored.push(await makeTrack({ id: f.id, name: f.name, blob: f.blob }));
     }
+
+    if (tracks.length){
+      // 恢复完成前用户已手动添加过音轨：合并保留，不覆盖
+      const added = tracks;
+      tracks = restored.concat(added.filter(t => !restored.some(r => r.id === t.id)));
+      listEl.innerHTML = '';
+      tracks.forEach(appendRow);
+      updateStatus();
+      return;
+    }
     tracks = restored;
     tracks.forEach(appendRow);
     updateStatus();
@@ -678,9 +732,11 @@
   window.ambientMixer = {
     get tracks(){ return tracks; },
     addFiles,
-    commitOrder
+    commitOrder,
+    pauseAll: pauseAllTracks
   };
 
+  watchOutputDevice();
   updateStatus();
 })();
 </script>

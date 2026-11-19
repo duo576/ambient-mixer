@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import CoreAudio
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, NSMenuDelegate {
 
@@ -50,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         statusItem = item
 
         buildWindow()
+        setupOutputDeviceMonitor()
 
         DispatchQueue.main.async { [weak self] in
             self?.showWindow()
@@ -121,6 +123,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         statusItem?.menu = nil
     }
 
+    // MARK: - 播放设备监听
+
+    private var deviceListener: AudioObjectPropertyListenerBlock?
+
+    /// 规则：检测到默认输出设备切换 → 暂停所有音轨（保留播放位置）
+    func setupOutputDeviceMonitor(){
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            DispatchQueue.main.async {
+                print("[ambient-mixer] default output device changed → pause all tracks")
+                self?.pauseAllTracks()
+            }
+        }
+        let status = AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &addr, DispatchQueue.main, block)
+        if status == noErr {
+            deviceListener = block
+            print("[ambient-mixer] output device monitor installed")
+        }else{
+            print("[ambient-mixer] output device monitor failed: \(status)")
+        }
+    }
+
+    func pauseAllTracks(){
+        webView?.evaluateJavaScript(
+            "(window.ambientMixer && window.ambientMixer.pauseAll) ? window.ambientMixer.pauseAll() : 0"
+        ) { _, err in
+            if let err = err { print("[ambient-mixer] pauseAll error: \(err.localizedDescription)") }
+        }
+    }
+
+    func currentDefaultOutput() -> AudioDeviceID {
+        var dev = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &dev)
+        return dev
+    }
+
+    @discardableResult
+    func setDefaultOutput(_ dev: AudioDeviceID) -> OSStatus {
+        var d = dev
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        return AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil,
+                                          UInt32(MemoryLayout<AudioDeviceID>.size), &d)
+    }
+
     // MARK: - webview
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -131,6 +189,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         } else if env["AMBIENT_DEBUG"] != nil {
             runDebugJS(clean: false)
         }
+        if env["AMBIENT_DEVICE_TEST"] != nil {
+            runDeviceSwitchTest()
+        }
+    }
+
+    /// AMBIENT_DEVICE_TEST=1：播放首条音轨 → 真实切换输出设备 → 验证自动暂停 → 切回原设备
+    private func runDeviceSwitchTest(){
+        Task { @MainActor in
+            guard let wv = webView else { return }
+            try? await Task.sleep(nanoseconds: 3_000_000_000) // 等音轨恢复
+            let playJS = "(function(){var t=window.ambientMixer.tracks[0]; if(!t) return 'no-track'; t.audio.play().catch(function(){}); return 'play-called';})()"
+            if let r = try? await wv.evaluateJavaScript(playJS) { print("[ambient-mixer] device-test play: \(r as? String ?? "?")") }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            let stateJS = "(function(){var t=window.ambientMixer.tracks[0]; return JSON.stringify({paused: t? t.audio.paused : null, ct: t? +t.audio.currentTime.toFixed(2) : null});})()"
+            if let r = try? await wv.evaluateJavaScript(stateJS) { print("[ambient-mixer] device-test before: \(r as? String ?? "?")") }
+
+            let cur = currentDefaultOutput()
+            let devices = outputDevices()
+            print("[ambient-mixer] device-test outputs: \(devices.map { "\($0.0):\($0.1)" }), current=\(cur)")
+            guard let alt = devices.first(where: { $0.0 != cur }) else {
+                print("[ambient-mixer] device-test: no alternate output device"); return
+            }
+
+            // 真实切换（约 1.5 秒后切回）
+            let st1 = setDefaultOutput(alt.0)
+            print("[ambient-mixer] device-test switch→\(alt.0)(\(alt.1)) status=\(st1)")
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if let r = try? await wv.evaluateJavaScript(stateJS) { print("[ambient-mixer] device-test after switch: \(r as? String ?? "?")") }
+
+            let st2 = setDefaultOutput(cur)
+            print("[ambient-mixer] device-test restore→\(cur) status=\(st2)")
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            if let r = try? await wv.evaluateJavaScript(stateJS) { print("[ambient-mixer] device-test after restore: \(r as? String ?? "?")") }
+            print("[ambient-mixer] device-test done")
+        }
+    }
+
+    /// 列出有输出通道的设备 (id, 名称)
+    func outputDevices() -> [(AudioDeviceID, String)] {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(0)
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { return [] }
+        let count = Int(size) / MemoryLayout<AudioDeviceID>.size
+        var ids = [AudioDeviceID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr else { return [] }
+
+        var out: [(AudioDeviceID, String)] = []
+        for id in ids {
+            var cfg = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyStreamConfiguration,
+                mScope: kAudioObjectPropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain)
+            var cfgSize = UInt32(0)
+            guard AudioObjectGetPropertyDataSize(id, &cfg, 0, nil, &cfgSize) == noErr, cfgSize > 0 else { continue }
+            let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(cfgSize), alignment: 16)
+            defer { raw.deallocate() }
+            guard AudioObjectGetPropertyData(id, &cfg, 0, nil, &cfgSize, raw) == noErr else { continue }
+            let abl = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+            let channels = abl.reduce(0) { $0 + Int($1.mNumberChannels) }
+            guard channels > 0 else { continue }
+
+            var nameAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioObjectPropertyName,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            var name: CFString = "" as CFString
+            var nameSize = UInt32(MemoryLayout<CFString>.size)
+            _ = AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &name)
+            out.append((id, name as String))
+        }
+        return out
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
