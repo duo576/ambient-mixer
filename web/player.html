@@ -762,6 +762,47 @@
     else resumePlayback();
   });
 
+  /* ============ 播放设备切换 → 暂停所有音轨 ============ */
+  // 规则：系统默认输出设备变化（拔插耳机、切换扬声器）时暂停全部音轨。
+  // 复用 pausePlayback 的语义——「继续播放」只恢复此次暂停前正在播放的音轨。
+  function watchOutputDevice(){
+    const md = navigator.mediaDevices;
+    if (!md || !md.enumerateDevices) return; // App 内由原生 CoreAudio 监听兜底
+    let last = null;
+    let busy = false;
+
+    async function fingerprint(){
+      try{
+        const devs = await md.enumerateDevices();
+        return devs.filter(d => d.kind === 'audiooutput')
+          .map(d => d.deviceId + '|' + d.label).join(';');
+      }catch(e){ return null; }
+    }
+
+    async function check(){
+      if (busy) return;
+      busy = true;
+      const fp = await fingerprint();
+      busy = false;
+      if (fp === null) return;
+      if (last === null){ last = fp; return; }
+      if (fp !== last){
+        last = fp;
+        if (tracks.some(t => !t.audio.paused && !t.audio.ended)) pausePlayback();
+      }
+    }
+
+    if (typeof md.addEventListener === 'function'){
+      md.addEventListener('devicechange', () => { check(); });
+    }
+    // 兜底轮询：播放期间每 2 秒比对一次设备指纹（部分引擎不触发默认设备切换事件）
+    setInterval(() => {
+      if (tracks.some(t => !t.audio.paused && !t.audio.ended)) check();
+    }, 2000);
+
+    check();
+  }
+
   /* ============ restore ============ */
   async function restore(){
     let meta = [];
@@ -802,6 +843,7 @@
     commitOrder
   };
 
+  watchOutputDevice();
   updateStatus();
 })();
 </script>
