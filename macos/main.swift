@@ -1,7 +1,7 @@
 import AppKit
 import WebKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, NSMenuDelegate, WKScriptMessageHandler {
 
     static let bundleID = "com.duolan.ambient-mixer"
 
@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     var window: NSWindow?
     var webView: WKWebView?
     let statusMenu = NSMenu()
+    let pauseItem = NSMenuItem(title: "暂停播放", action: #selector(pausePlayback), keyEquivalent: "")
+    let resumeItem = NSMenuItem(title: "继续播放", action: #selector(resumePlayback), keyEquivalent: "")
 
     // MARK: - lifecycle
 
@@ -23,13 +25,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             return
         }
 
+        // Set the running app icon explicitly as well as the bundle icon so
+        // Dock and window switching do not retain an earlier placeholder.
+        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: iconURL) {
+            NSApp.applicationIconImage = icon
+        }
+
         // 右键菜单
-        let showItem = NSMenuItem(title: "显示 / 隐藏窗口", action: #selector(toggleWindow), keyEquivalent: "")
+        let showItem = NSMenuItem(title: "显示窗口", action: #selector(showWindow), keyEquivalent: "")
         showItem.target = self
+        statusMenu.autoenablesItems = false
         statusMenu.addItem(showItem)
         statusMenu.addItem(.separator())
+        pauseItem.target = self
+        resumeItem.target = self
+        pauseItem.isEnabled = false
+        resumeItem.isEnabled = false
+        statusMenu.addItem(pauseItem)
+        statusMenu.addItem(resumeItem)
+        statusMenu.addItem(.separator())
         let quitItem = NSMenuItem(title: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        quitItem.target = self
+        quitItem.target = NSApp
         statusMenu.addItem(quitItem)
         statusMenu.delegate = self
 
@@ -49,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
         statusItem = item
 
+        buildMainMenu()
         buildWindow()
 
         DispatchQueue.main.async { [weak self] in
@@ -60,20 +78,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return false // 关窗口不退出，菜单栏图标还在
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showWindow()
+        return true
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard let w = window else { return }
+        if w.isMiniaturized { w.deminiaturize(nil) }
+        w.makeKeyAndOrderFront(nil)
+    }
+
+    func buildMainMenu() {
+        let menu = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "关于氛围音播放器", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "隐藏氛围音播放器", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "退出氛围音播放器", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        menu.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "编辑")
+        for (title, action, key) in [("剪切", "cut:", "x"), ("拷贝", "copy:", "c"), ("粘贴", "paste:", "v"), ("全选", "selectAll:", "a")] {
+            editMenu.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
+        }
+        editItem.submenu = editMenu
+        menu.addItem(editItem)
+
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "窗口")
+        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowItem.submenu = windowMenu
+        menu.addItem(windowItem)
+        NSApp.mainMenu = menu
+        NSApp.windowsMenu = windowMenu
+    }
+
     // MARK: - window
 
     func buildWindow() {
-        let rect = NSRect(x: 0, y: 0, width: 820, height: 560)
+        let rect = NSRect(x: 0, y: 0, width: 760, height: 460)
         let w = NSWindow(contentRect: rect,
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
         w.title = "氛围音播放器"
         w.isReleasedWhenClosed = false
         w.contentMinSize = NSSize(width: 460, height: 300)
-        w.center()
+        w.level = .normal
+        w.collectionBehavior = [.managed, .moveToActiveSpace, .fullScreenPrimary]
+        w.setFrameAutosaveName("AmbientMixerMainWindow")
+        if !w.setFrameUsingName("AmbientMixerMainWindow") { w.center() }
 
         let config = WKWebViewConfiguration()
         config.mediaTypesRequiringUserActionForPlayback = []
+        config.userContentController.add(self, name: "playbackState")
         let webView = WKWebView(frame: rect, configuration: config)
         webView.navigationDelegate = self
         w.contentView = webView
@@ -88,37 +152,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
     }
 
-    func showWindow() {
+    @objc func showWindow() {
         guard let w = window else { return }
+        if w.isMiniaturized { w.deminiaturize(nil) }
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
-        NSApp.activate()
-    }
-
-    @objc func toggleWindow() {
-        guard let w = window else { return }
-        if w.isVisible {
-            w.orderOut(nil)
-        } else {
-            showWindow()
-        }
+        w.orderFrontRegardless()
     }
 
     // MARK: - status item
 
     @objc func statusClicked(_ sender: Any?) {
         if NSApp.currentEvent?.type == .rightMouseUp {
-            // 右键弹菜单（弹完由 menuDidClose 复位，左键才能恢复切换窗口）
-            if let item = statusItem, let btn = item.button {
-                item.menu = statusMenu
-                btn.performClick(nil)
-            }
+            guard let btn = statusItem?.button else { return }
+            statusMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: btn.bounds.minY), in: btn)
         } else {
-            toggleWindow()
+            // A visible window may be behind another app or on another Space.
+            // Always bring it forward instead of hiding it based on isVisible.
+            showWindow()
         }
     }
 
-    func menuDidClose(_ menu: NSMenu) {
-        statusItem?.menu = nil
+    @objc func pausePlayback() {
+        webView?.evaluateJavaScript("window.ambientMixer?.pausePlayback()", completionHandler: nil)
+    }
+
+    @objc func resumePlayback() {
+        Task { @MainActor in
+            do {
+                _ = try await webView?.callAsyncJavaScript("await window.ambientMixer?.resumePlayback()", arguments: [:], in: nil, contentWorld: .page)
+            } catch { print("[ambient-mixer] resume failed: \(error)") }
+        }
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "playbackState", let state = message.body as? [String: Bool] else { return }
+        pauseItem.isEnabled = state["canPause"] == true
+        resumeItem.isEnabled = state["canResume"] == true
     }
 
     // MARK: - webview
@@ -204,14 +275,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 } ?? "status=nil"
                 print("[ambient-mixer] ui: \(winInfo) | \(stInfo)")
 
-                // 进程内合成点击，验证 图标→statusClicked→toggleWindow 链路（不动用户屏幕）
+                // 进程内合成点击，验证 图标→statusClicked→showWindow 链路（不动用户屏幕）
                 if let btn = self.statusItem?.button {
                     let before = self.window?.isVisible ?? false
                     btn.performClick(nil)
                     let after = self.window?.isVisible ?? false
                     btn.performClick(nil)
                     let restored = self.window?.isVisible ?? false
-                    print("[ambient-mixer] toggle test: \(before) -> \(after) -> \(restored) (expect true -> false -> true)")
+                    print("[ambient-mixer] toggle test: \(before) -> \(after) -> \(restored) (expect true -> true -> true)")
                 }
             }
         }
@@ -225,5 +296,5 @@ setvbuf(stdout, nil, _IONBF, 0) // 日志即时输出，便于终端诊断
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.accessory)
+app.setActivationPolicy(.regular)
 app.run()

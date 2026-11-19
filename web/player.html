@@ -39,6 +39,7 @@
     cursor:pointer; white-space:nowrap;
     transition: border-color .15s ease, background-color .15s ease;
   }
+  .btn:disabled{ opacity:.45; cursor:default; }
   .btn:hover{ border-color: color-mix(in srgb, var(--accent, #0f9d76) 45%, var(--border, #e2e4e8)); }
   .btn.primary{
     background: color-mix(in srgb, var(--accent, #0f9d76) 13%, var(--card, #fff));
@@ -189,14 +190,58 @@
     outline-offset:2px;
   }
 
+  /* Desktop player: separate track identity, timeline and mixing controls. */
+  :root{
+    color-scheme:light dark;
+    --foreground:#24322e; --muted-foreground:#748079;
+    --border:#dce5df; --card:#fff; --accent:#11866a;
+  }
+  body{ background:#f3f6f2; }
+  .app{ max-width:1040px; margin:0 auto; padding:26px 28px 20px; }
+  header{ margin-bottom:24px; gap:16px; }
+  .brand{ flex-direction:column; gap:5px; }
+  h1{ font-size:22px; letter-spacing:-.04em; }
+  .count{ min-height:18px; }
+  .btn{ padding:9px 15px; border-radius:10px; }
+  .btn.primary{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  #list{ gap:12px; }
+  .row{
+    grid-template-columns:40px minmax(0,1fr) 150px 28px 28px;
+    grid-template-areas:"play name vol loop rm" ". seek seek time time";
+    gap:12px; padding:18px; border-radius:16px;
+    box-shadow:0 3px 12px #24322e04;
+  }
+  .play{ grid-area:play; width:38px; height:38px; }
+  .name{ grid-area:name; }
+  .seek{ grid-area:seek; min-width:0; }
+  .time{ grid-area:time; font-size:11px; }
+  .vol{ grid-area:vol; min-width:0; }
+  .loop{ grid-area:loop; }
+  .rm{ grid-area:rm; }
+  .row.playing{ background:color-mix(in srgb,var(--accent) 5%,var(--card)); }
+  .txt{ font-size:14px; }
+  .hint{ margin:18px 4px 0; font-size:11px; }
+  .empty{ background:var(--card); padding:70px 24px; border-radius:16px; }
+  .empty strong{ font-size:17px; margin-bottom:8px; }
+  @media (prefers-color-scheme:dark){
+    :root{ --foreground:#e4ece7; --muted-foreground:#a1b2a8; --border:#35473e; --card:#202d27; --accent:#50c5a2; }
+    body{ background:#18221d; }
+    .btn.primary{ color:#14251d; }
+  }
+
+  .master-volume{ display:flex; align-items:center; justify-content:flex-end; gap:12px; margin:-6px 0 22px; color:var(--muted-foreground); font-size:12px; }
+  .master-slider{ position:relative; width:180px; padding-bottom:7px; }
+  .master-slider input{ display:block; }
+  .master-neutral{ position:absolute; left:calc(6.5px + (100% - 13px) / 3); bottom:0; width:4px; height:4px; border-radius:50%; background:var(--accent); transform:translateX(-50%); pointer-events:none; }
+
   /* ---------- narrow / widget ---------- */
   @media (max-width: 680px){
     .row{
       grid-template-columns: 36px minmax(0,1fr) auto 30px;
       grid-template-areas:
-        "play name time rm"
+        "play name loop rm"
         "seek seek seek seek"
-        "vol vol vol loop";
+        "vol vol time time";
       row-gap:6px;
     }
     .play{ grid-area:play; }
@@ -206,7 +251,9 @@
     .vol{ grid-area:vol; }
     .loop{ grid-area:loop; justify-self:end; }
     .rm{ grid-area:rm; }
-    .app{ padding:12px 12px 16px; }
+    .app{ padding:20px 16px; }
+    .row{ padding:14px; column-gap:10px; }
+    .time{ align-self:center; }
   }
 </style>
 </head>
@@ -218,12 +265,19 @@
       <span class="count" id="count"></span>
     </div>
     <div class="actions">
-      <button class="btn hidden" id="allBtn" type="button">全部播放</button>
       <button class="btn primary" id="addBtn" type="button">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>添加音频
       </button>
+      <button class="btn hidden" id="allBtn" type="button" disabled>继续播放</button>
     </div>
   </header>
+  <div class="master-volume">
+    <label for="masterVolume">主音量</label>
+    <div class="master-slider">
+      <input id="masterVolume" type="range" min="0" max="3" step="0.01" value="1" aria-label="主音量">
+      <span class="master-neutral" aria-hidden="true"></span>
+    </div>
+  </div>
 
   <div class="empty" id="empty" role="button" tabindex="0">
     <strong>把氛围音文件加进来</strong>
@@ -250,7 +304,46 @@
   const LS_KEY = 'ambient-mixer-meta';
   const DB_NAME = 'ambient-mixer', STORE = 'files';
 
+  const masterVolumeEl = $('#masterVolume');
+  let masterVolume = 1;
+  try{
+    const stored = localStorage.getItem('ambient-mixer-master-volume');
+    const value = stored === null ? 1 : Number(stored);
+    if (Number.isFinite(value)) masterVolume = Math.max(0, Math.min(3, value));
+  }catch(e){}
+  let audioContext = null, masterGain = null;
+  function connectAudio(audio){
+    if (!audioContext){
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = audioContext.createGain();
+      masterGain.gain.value = masterVolume;
+      masterGain.connect(audioContext.destination);
+    }
+    const source = audioContext.createMediaElementSource(audio);
+    source.connect(masterGain);
+    return source;
+  }
+  function updateMasterVolume(){
+    masterVolumeEl.value = masterVolume;
+    masterVolumeEl.style.setProperty('--p', (masterVolume / 3 * 100) + '%');
+    if (masterGain){
+      masterGain.gain.cancelScheduledValues(audioContext.currentTime);
+      masterGain.gain.setTargetAtTime(masterVolume, audioContext.currentTime, 0.015);
+    }
+  }
+  masterVolumeEl.addEventListener('input', () => {
+    masterVolume = Number(masterVolumeEl.value);
+    updateMasterVolume();
+    try{ localStorage.setItem('ambient-mixer-master-volume', String(masterVolume)); }catch(e){}
+  });
+  masterVolumeEl.addEventListener('dblclick', () => {
+    masterVolumeEl.value = '1';
+    masterVolumeEl.dispatchEvent(new Event('input'));
+  });
+  updateMasterVolume();
+
   let tracks = [];
+  let pausedTrackIds = new Set();
   let db = null;
   let saveTimer = 0;
   let draggingId = null;
@@ -351,13 +444,16 @@
   async function makeTrack(rec){
     const audio = new Audio();
     audio.preload = 'metadata';
+    audio.crossOrigin = 'anonymous';
+    audio.hidden = true;
+    document.body.appendChild(audio);
     audio.loop = rec.loop !== false;
     audio.volume = (typeof rec.volume === 'number' && rec.volume >= 0 && rec.volume <= 1) ? rec.volume : 0.8;
     audio.src = URL.createObjectURL(await sourceBlob(rec));
 
     const t = {
       id: rec.id, name: rec.name, blob: rec.blob,
-      audio, volume: audio.volume, loop: audio.loop,
+      audio, source: null, volume: audio.volume, loop: audio.loop,
       el: null, seeking: false
     };
 
@@ -365,7 +461,7 @@
       if (t.el){ t.el.dur.textContent = fmt(audio.duration); updateProgress(t); }
     });
     audio.addEventListener('timeupdate', () => updateProgress(t));
-    audio.addEventListener('play',   () => { rowState(t); updateStatus(); ensureTick(); });
+    audio.addEventListener('play',   () => { if (!t.source) t.source = connectAudio(audio); if (audioContext.state === 'suspended') audioContext.resume().catch(console.warn); pausedTrackIds.delete(t.id); rowState(t); updateStatus(); ensureTick(); });
     audio.addEventListener('pause',  () => { rowState(t); updateStatus(); updateProgress(t); });
     audio.addEventListener('ended',  () => {
       try{ audio.currentTime = 0; }catch(e){}
@@ -479,8 +575,13 @@
     const p = tracks.filter(t => !t.audio.paused && !t.audio.ended).length;
     countEl.textContent = n ? (p ? n + ' 条音轨 · ' + p + ' 条播放中' : n + ' 条音轨') : '';
     allBtn.classList.toggle('hidden', n === 0);
-    allBtn.textContent = p > 0 ? '全部暂停' : '全部播放';
+    allBtn.textContent = p > 0 ? '暂停播放' : '继续播放';
+    const canResume = tracks.some(t => pausedTrackIds.has(t.id));
+    allBtn.disabled = p === 0 && !canResume;
+    allBtn.title = p > 0 ? '暂停所有正在播放的音轨' : canResume ? '继续之前正在播放的音轨' : '请先播放一条音轨';
     allBtn.setAttribute('aria-label', allBtn.textContent);
+    const bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.playbackState;
+    if (bridge) bridge.postMessage({ canPause: p > 0, canResume: canResume && p === 0 });
     hintEl.classList.toggle('hidden', n < 2);
     emptyEl.classList.toggle('hidden', n > 0);
   }
@@ -520,16 +621,37 @@
   window.addEventListener('pointercancel', flushSeeking);
 
   /* ============ actions ============ */
+  async function playTrack(t){
+    // Resume the output context in the same user gesture as media playback.
+    if (!t.source) t.source = connectAudio(t.audio);
+    const resumed = audioContext.resume();
+    const played = t.audio.play();
+    await Promise.all([resumed, played]);
+  }
+  function pausePlayback(){
+    const playing = tracks.filter(t => !t.audio.paused && !t.audio.ended);
+    if (playing.length) pausedTrackIds = new Set(playing.map(t => t.id));
+    tracks.forEach(t => t.audio.pause());
+    updateStatus();
+  }
+  async function resumePlayback(){
+    const paused = tracks.filter(t => pausedTrackIds.has(t.id));
+    await Promise.allSettled(paused.map(t => playTrack(t)));
+    updateStatus();
+  }
   async function togglePlay(t){
     if (t.audio.paused){
-      try{ await t.audio.play(); }catch(e){ console.warn('play() failed:', e); }
+      try{ await playTrack(t); }catch(e){ console.warn('play() failed:', e); }
     }else{
       t.audio.pause();
     }
   }
 
   async function removeTrack(t){
+    pausedTrackIds.delete(t.id);
     t.audio.pause();
+    if (t.source) t.source.disconnect();
+    t.audio.remove();
     try{ URL.revokeObjectURL(t.audio.src); }catch(e){}
     if (t.el) t.el.row.remove();
     tracks = tracks.filter(x => x !== t);
@@ -636,12 +758,8 @@
     fileInput.value = '';
   });
   allBtn.addEventListener('click', () => {
-    const anyPlaying = tracks.some(t => !t.audio.paused && !t.audio.ended);
-    if (anyPlaying){
-      tracks.forEach(t => t.audio.pause());
-    }else{
-      tracks.forEach(t => { const p = t.audio.play(); if (p && p.catch) p.catch(() => {}); });
-    }
+    if (tracks.some(t => !t.audio.paused && !t.audio.ended)) pausePlayback();
+    else resumePlayback();
   });
 
   /* ============ restore ============ */
@@ -678,6 +796,9 @@
   window.ambientMixer = {
     get tracks(){ return tracks; },
     addFiles,
+    pausePlayback,
+    resumePlayback,
+    get masterVolume(){ return masterVolume; },
     commitOrder
   };
 
